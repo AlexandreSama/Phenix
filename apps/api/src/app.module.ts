@@ -8,6 +8,7 @@ import { GuildsModule } from "./guilds/guilds.module.js";
 import { PrismaModule } from "./prisma/prisma.module.js";
 import { RedisModule } from "./redis/redis.module.js";
 import { StorageModule } from "./storage/storage.module.js";
+import {AuthModule} from "./auth/auth.module.js";
 
 @Module({
   imports: [
@@ -30,6 +31,7 @@ import { StorageModule } from "./storage/storage.module.js";
     PrismaModule,
     RedisModule,
     StorageModule,
+    AuthModule,
     GuildsModule,
   ],
   controllers: [HealthController],

@@ -16,6 +16,13 @@ const nextConfig: NextConfig = {
       },
     },
   },
+  // En dev, le panel relaie /api/* vers l'API : navigateur, cookies et API partagent la même origine.
+  // En prod, c'est le reverse proxy qui fait ce relais (voir le Caddyfile).
+  async rewrites() {
+    if (process.env.NODE_ENV !== "development") return [];
+    const apiUrl = process.env["API_URL"] ?? "http://localhost:3001";
+    return [{ source: "/api/:path*", destination: `${apiUrl}/:path*` }];
+  },
 };
 
 export default nextConfig;
