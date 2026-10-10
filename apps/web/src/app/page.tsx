@@ -1,6 +1,7 @@
 import { Suspense } from "react";
 import type { PanelGuild } from "@phenix/shared";
 import { api, getMe } from "@/lib/api";
+import Link from "next/link";
 
 async function Account() {
     const me = await getMe();
@@ -27,7 +28,14 @@ async function Account() {
             <ul className="space-y-1">
                 {guilds.map((guild) => (
                     <li key={guild.id}>
-                        {guild.name} : {guild.botPresent ? guild.role : "Phenix n'est pas sur ce serveur"}
+                        {guild.botPresent ? (
+                            <Link href={`/guilds/${guild.id}`} className="text-indigo-600 hover:underline">
+                                {guild.name}
+                            </Link>
+                        ) : (
+                            guild.name
+                        )}{" "}
+                        : {guild.botPresent ? guild.role : "Phenix n'est pas sur ce serveur"}
                     </li>
                 ))}
             </ul>
@@ -37,7 +45,7 @@ async function Account() {
 
 export default function Home() {
     return (
-        <main className="mx-auto max-w-2xl space-y-6 p-8">
+        <main className="mx-auto max-w-2xl space-y-6 p-8 w-full">
             <h1 className="text-2xl font-semibold">Phenix</h1>
             {/* Cache Components : la lecture des cookies doit être dans un Suspense */}
             <Suspense fallback={<p>Chargement…</p>}>

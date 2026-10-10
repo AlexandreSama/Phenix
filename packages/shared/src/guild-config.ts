@@ -58,3 +58,8 @@ export const CONFIG_CHANNEL_FIELDS = {
 } as const satisfies Partial<Record<keyof GuildConfigPatch, ChannelKind>>;
 
 export const CONFIG_ROLE_FIELDS = ["ticketStaffRoleId"] as const satisfies readonly (keyof GuildConfigPatch)[];
+
+/** Réponse de GET et PATCH /guilds/:guildId/config : tous les champs modifiables, plus guildId */
+export type GuildConfigResponse = { guildId: string } & {
+    [K in keyof GuildConfigPatch]-?: Exclude<GuildConfigPatch[K], undefined>;
+};
