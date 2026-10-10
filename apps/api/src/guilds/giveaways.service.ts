@@ -2,7 +2,7 @@
 import { Injectable } from "@nestjs/common";
 import { InjectQueue } from "@nestjs/bullmq";
 import { Queue } from "bullmq";
-import { JOBS, SCHEDULED_QUEUE, jobId, type JobData } from "@phenix/shared";
+import {JOBS, SCHEDULED_QUEUE, type JobData, scheduledJobOptions} from "@phenix/shared";
 import { PrismaService } from "../prisma/prisma.service.js";
 
 export interface CreateGiveawayInput {
@@ -26,13 +26,11 @@ export class GiveawaysService {
         const data: JobData["giveaway-end"] = { giveawayId: giveaway.id };
 
         // Le bot recevra ce job à endsAt et tirera les gagnants
-        await this.queue.add(JOBS.giveawayEnd, data, {
-            jobId: jobId(JOBS.giveawayEnd, giveaway.id),
-            delay: Math.max(0, giveaway.endsAt.getTime() - Date.now()),
-            attempts: 5,
-            backoff: { type: "exponential", delay: 10_000 },
-            removeOnComplete: true,
-        });
+        await this.queue.add(
+            JOBS.giveawayEnd,
+            data,
+            scheduledJobOptions(JOBS.giveawayEnd, giveaway.id, giveaway.endsAt),
+        );
         return giveaway;
     }
 }

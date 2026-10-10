@@ -4,6 +4,7 @@ import type { Client } from "discord.js";
 import type { PrismaClient } from "@phenix/database";
 import { JOBS, SCHEDULED_QUEUE, type JobData } from "@phenix/shared";
 import { METRICS_FLUSH_EVERY_MS, flushDailyMetrics } from "./metrics.js";
+import { reconcileJobs } from "./reconcile.js";
 
 type SchedulerDeps = {
     redisUrl: string;
@@ -62,6 +63,13 @@ export async function startScheduler({ redisUrl, redis, client, prisma }: Schedu
     worker.on("failed", (job, error) => console.error(`Job ${job?.name ?? "?"} en échec :`, error));
     // Sans écouteur, une erreur de connexion émise par le Worker ferait planter le process
     worker.on("error", (error) => console.error("Worker BullMQ :", error));
+
+    // Après le Worker : un échec ici ne doit pas empêcher les jobs déjà planifiés de tourner
+    try {
+        console.log("Réconciliation des jobs :", await reconcileJobs(queue, prisma));
+    } catch (error) {
+        console.error("Réconciliation impossible :", error);
+    }
 
     return {
         async close() {
