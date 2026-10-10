@@ -93,7 +93,9 @@ jobs:
           outputs: type=cacheonly
           cache-from: type=gha,scope=phenix
 
+      # Sautée tant que docker/backup/ n'existe pas (onglet Sauvegardes pas encore fait)
       - name: Image backup
+        if: hashFiles('docker/backup/Dockerfile') != ''
         uses: docker/build-push-action@v7
         with:
           context: docker/backup
