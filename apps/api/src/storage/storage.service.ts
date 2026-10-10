@@ -2,7 +2,7 @@
 import { Injectable, type OnModuleInit } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import {
-    CreateBucketCommand,
+    CreateBucketCommand, DeleteObjectsCommand,
     GetObjectCommand,
     HeadBucketCommand,
     PutObjectCommand,
@@ -49,5 +49,24 @@ export class StorageService implements OnModuleInit {
     async get(objectKey: string) {
         const object = await this.s3.send(new GetObjectCommand({ Bucket: this.bucket, Key: objectKey }));
         return object.Body;
+    }
+
+    /**
+     * Supprime des objets par lots de 1 000 (maximum S3 par requête).
+     * Une clé déjà absente compte comme supprimée. Renvoie les clés en échec.
+     */
+    async deleteMany(bucket: string, objectKeys: string[]): Promise<Set<string>> {
+        const failed = new Set<string>();
+        for (let i = 0; i < objectKeys.length; i += 1000) {
+            const keys = objectKeys.slice(i, i + 1000);
+            const result = await this.s3.send(
+                new DeleteObjectsCommand({
+                    Bucket: bucket,
+                    Delete: { Objects: keys.map((Key) => ({ Key })), Quiet: true }, // Quiet : seules les erreurs reviennent
+                }),
+            );
+            for (const error of result.Errors ?? []) if (error.Key) failed.add(error.Key);
+        }
+        return failed;
     }
 }

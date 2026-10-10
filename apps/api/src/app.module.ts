@@ -11,6 +11,7 @@ import { StorageModule } from "./storage/storage.module.js";
 import {AuthModule} from "./auth/auth.module.js";
 import {APP_PIPE} from "@nestjs/core";
 import {validationPipe} from "./validation.js";
+import {MaintenanceModule} from "./maintenance/maintenance.module.js";
 
 @Module({
   imports: [
@@ -35,6 +36,7 @@ import {validationPipe} from "./validation.js";
     StorageModule,
     AuthModule,
     GuildsModule,
+    MaintenanceModule
   ],
   controllers: [HealthController],
   providers: [{ provide: APP_PIPE, useValue: validationPipe }],

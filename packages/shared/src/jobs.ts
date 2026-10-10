@@ -1,6 +1,12 @@
 /** Une seule file pour toutes les tâches différées. L'API y ajoute des jobs, le bot les exécute. */
 export const SCHEDULED_QUEUE = "phenix-scheduled";
 
+/**
+ * Deuxième file, consommée par l'API : la maintenance n'a pas besoin de Discord,
+ * et le bot ne doit pas recevoir de jobs qu'il ne sait pas traiter.
+ */
+export const MAINTENANCE_QUEUE = "phenix-maintenance";
+
 export const JOBS = {
     giveawayEnd: "giveaway-end",
     banExpire: "ban-expire",
@@ -8,6 +14,11 @@ export const JOBS = {
     td2Reminder: "td2-reminder",
     /** Récurrent : planifié par le bot avec upsertJobScheduler, sous le même nom */
     flushMetrics: "flush-metrics",
+} as const;
+
+export const MAINTENANCE_JOBS = {
+    /** Quotidien : planifié par l'API avec upsertJobScheduler, sous le même nom */
+    purgeRetention: "purge-retention",
 } as const;
 
 export type JobName = (typeof JOBS)[keyof typeof JOBS];
