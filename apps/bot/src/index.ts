@@ -7,12 +7,17 @@ import { startScheduler, type Scheduler } from "./scheduler.js";
 import { commands } from "./commands/index.js";
 import { ConfigCache } from "./config-cache.js";
 import { env } from "./env.js";
+import { createErrorRecorder } from "@phenix/shared/telemetry";
+import { installProcessHandlers, startSampling } from "./telemetry.js";
 
 const prisma = createPrismaClient(env.databaseUrl);
 const redis = new Redis(env.redisUrl);
 const subscriber = new Redis(env.redisUrl); // une connexion abonnée ne sert qu'au pub/sub
 const configs = new ConfigCache(prisma);
+const recordError = createErrorRecorder("BOT", (data) => prisma.errorEvent.create({ data }));
+installProcessHandlers(recordError);
 let scheduler: Scheduler | undefined;
+let sampling: ReturnType<typeof startSampling> | undefined;
 
 const client = new Client({
     intents: [
@@ -32,7 +37,8 @@ client.once(Events.ClientReady, async (ready) => {
         });
     }
     await configs.listen(subscriber);
-    scheduler = await startScheduler({ redisUrl: env.redisUrl, redis, client: ready, prisma });
+    scheduler = await startScheduler({ redisUrl: env.redisUrl, redis, client: ready, prisma, recordError });
+    sampling = startSampling(prisma, ready);
     console.log(`Phenix connecté : ${ready.user.tag} sur ${ready.guilds.cache.size} serveurs`);
 });
 
@@ -66,6 +72,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     } catch (error) {
         errorCode = error instanceof Error ? error.name : "UnknownError";
         console.error(error);
+        void recordError(error, { guildId: interaction.guildId, command: interaction.commandName });
         const reply = { content: "Une erreur est survenue.", flags: MessageFlags.Ephemeral } as const;
         if (interaction.replied || interaction.deferred) await interaction.followUp(reply);
         else await interaction.reply(reply);
@@ -87,7 +94,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
             .catch(() => {});
         if (interaction.guildId) countDaily(redis, interaction.guildId, METRICS.interactions);
     }
-});
+});sampling?.stop();
 
 client.on(Events.MessageCreate, async (message) => {
     if (!message.inGuild() || message.author.bot) return;
@@ -121,9 +128,16 @@ client.on(Events.GuildMemberRemove, (member) => {
     countDaily(redis, member.guild.id, METRICS.membersLeft); // départ, kick ou ban
 });
 
+// Sans écouteur, une erreur émise par le client (WebSocket, REST) ferait planter le process
+client.on(Events.Error, (error) => {
+    console.error("Client Discord :", error);
+    void recordError(error, { source: "discord.js" });
+});
+
 // Arrêt propre : Docker envoie SIGTERM avant de couper le conteneur
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
     process.once(signal, async () => {
+        sampling?.stop();
         await scheduler?.close();
         await client.destroy();
         await prisma.$disconnect();

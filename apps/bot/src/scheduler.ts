@@ -3,6 +3,7 @@ import { Redis } from "ioredis";
 import type { Client } from "discord.js";
 import type { PrismaClient } from "@phenix/database";
 import { JOBS, SCHEDULED_QUEUE, type JobData } from "@phenix/shared";
+import { type RecordError} from "@phenix/shared/telemetry";
 import { METRICS_FLUSH_EVERY_MS, flushDailyMetrics } from "./metrics.js";
 import { reconcileJobs } from "./reconcile.js";
 
@@ -12,11 +13,12 @@ type SchedulerDeps = {
     redis: Redis;
     client: Client;
     prisma: PrismaClient;
+    recordError: RecordError;
 };
 
 export type Scheduler = { close(): Promise<void> };
 
-export async function startScheduler({ redisUrl, redis, client, prisma }: SchedulerDeps): Promise<Scheduler> {
+export async function startScheduler({ redisUrl, redis, client, prisma, recordError }: SchedulerDeps): Promise<Scheduler> {
     // BullMQ exige maxRetriesPerRequest: null sur la connexion d'un Worker
     const connection = new Redis(redisUrl, { maxRetriesPerRequest: null });
     const queue = new Queue(SCHEDULED_QUEUE, { connection });
@@ -60,9 +62,15 @@ export async function startScheduler({ redisUrl, redis, client, prisma }: Schedu
         { connection, concurrency: 5 },
     );
 
-    worker.on("failed", (job, error) => console.error(`Job ${job?.name ?? "?"} en échec :`, error));
+    worker.on("failed", (job, error) => {
+        console.error(`Job ${job?.name ?? "?"} en échec :`, error);
+        void recordError(error, { job: job?.name ?? null, jobId: job?.id ?? null, attempt: job?.attemptsMade ?? null });
+    });
     // Sans écouteur, une erreur de connexion émise par le Worker ferait planter le process
-    worker.on("error", (error) => console.error("Worker BullMQ :", error));
+    worker.on("error", (error) => {
+        console.error("Worker BullMQ :", error);
+        void recordError(error, { source: "bullmq" });
+    });
 
     // Après le Worker : un échec ici ne doit pas empêcher les jobs déjà planifiés de tourner
     try {

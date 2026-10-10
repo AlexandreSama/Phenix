@@ -12,6 +12,7 @@ import {AuthModule} from "./auth/auth.module.js";
 import {APP_PIPE} from "@nestjs/core";
 import {validationPipe} from "./validation.js";
 import {MaintenanceModule} from "./maintenance/maintenance.module.js";
+import {TelemetryModule} from "./telemetry/telemetry.module.js";
 
 @Module({
   imports: [
@@ -32,6 +33,7 @@ import {MaintenanceModule} from "./maintenance/maintenance.module.js";
     }),
     BullModule.registerQueue({ name: SCHEDULED_QUEUE }),
     PrismaModule,
+    TelemetryModule,
     RedisModule,
     StorageModule,
     AuthModule,

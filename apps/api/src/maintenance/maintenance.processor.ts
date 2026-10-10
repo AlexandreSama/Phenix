@@ -3,10 +3,12 @@ import { InjectQueue, OnWorkerEvent, Processor, WorkerHost } from "@nestjs/bullm
 import type { Job, Queue } from "bullmq";
 import { MAINTENANCE_JOBS, MAINTENANCE_QUEUE } from "@phenix/shared";
 import { RetentionService } from "./retention.service.js";
+import {TelemetryService} from "../telemetry/telemetry.service.js";
 
 @Processor(MAINTENANCE_QUEUE)
 export class MaintenanceProcessor extends WorkerHost implements OnApplicationBootstrap {
     private readonly logger = new Logger(MaintenanceProcessor.name);
+    private readonly telemetry: TelemetryService;
 
     constructor(
         private readonly retention: RetentionService,
@@ -44,11 +46,13 @@ export class MaintenanceProcessor extends WorkerHost implements OnApplicationBoo
     @OnWorkerEvent("failed")
     onFailed(job: Job | undefined, error: Error) {
         this.logger.error(`Job ${job?.name ?? "?"} en échec (essai ${job?.attemptsMade ?? "?"}) : ${error.message}`);
+        void this.telemetry.recordError(error, { job: job?.name ?? null, attempt: job?.attemptsMade ?? null });
     }
 
     /** Sans écouteur, une erreur de connexion émise par le Worker ferait planter le process */
     @OnWorkerEvent("error")
     onError(error: Error) {
         this.logger.error(`Worker BullMQ : ${error.message}`);
+        void this.telemetry.recordError(error, { source: "bullmq" });
     }
 }
