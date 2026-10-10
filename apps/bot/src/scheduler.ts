@@ -1,14 +1,38 @@
-import { Worker, type Job } from "bullmq";
+import { Queue, Worker, type Job } from "bullmq";
 import { Redis } from "ioredis";
 import type { Client } from "discord.js";
 import type { PrismaClient } from "@phenix/database";
 import { JOBS, SCHEDULED_QUEUE, type JobData } from "@phenix/shared";
+import { METRICS_FLUSH_EVERY_MS, flushDailyMetrics } from "./metrics.js";
 
-export function startScheduler(redisUrl: string, client: Client, prisma: PrismaClient) {
+type SchedulerDeps = {
+    redisUrl: string;
+    /** Connexion Redis du bot, pour lire les compteurs */
+    redis: Redis;
+    client: Client;
+    prisma: PrismaClient;
+};
+
+export type Scheduler = { close(): Promise<void> };
+
+export async function startScheduler({ redisUrl, redis, client, prisma }: SchedulerDeps): Promise<Scheduler> {
     // BullMQ exige maxRetriesPerRequest: null sur la connexion d'un Worker
     const connection = new Redis(redisUrl, { maxRetriesPerRequest: null });
+    const queue = new Queue(SCHEDULED_QUEUE, { connection });
 
-    return new Worker(
+    // Upsert : rejoué à chaque démarrage, il met à jour le planning au lieu d'en ajouter un.
+    // Le premier report part tout de suite, puis toutes les 5 minutes.
+    await queue.upsertJobScheduler(
+        JOBS.flushMetrics,
+        { every: METRICS_FLUSH_EVERY_MS },
+        {
+            name: JOBS.flushMetrics,
+            // Sans ça, Redis garderait les 288 jobs terminés de chaque journée
+            opts: { removeOnComplete: true, removeOnFail: 50 },
+        },
+    );
+
+    const worker = new Worker(
         SCHEDULED_QUEUE,
         async (job: Job) => {
             switch (job.name) {
@@ -21,6 +45,8 @@ export function startScheduler(redisUrl: string, client: Client, prisma: PrismaC
                     await prisma.guildBan.update({ where: { id: banId }, data: { liftedAt: new Date() } });
                     return;
                 }
+                case JOBS.flushMetrics:
+                    return flushDailyMetrics(redis, prisma);
                 case JOBS.giveawayEnd:
                 case JOBS.muteExpire:
                 case JOBS.td2Reminder:
@@ -32,4 +58,16 @@ export function startScheduler(redisUrl: string, client: Client, prisma: PrismaC
         },
         { connection, concurrency: 5 },
     );
+
+    worker.on("failed", (job, error) => console.error(`Job ${job?.name ?? "?"} en échec :`, error));
+    // Sans écouteur, une erreur de connexion émise par le Worker ferait planter le process
+    worker.on("error", (error) => console.error("Worker BullMQ :", error));
+
+    return {
+        async close() {
+            await worker.close();
+            await queue.close();
+            connection.disconnect(); // connexion partagée : BullMQ ne la ferme pas lui-même
+        },
+    };
 }

@@ -6,6 +6,8 @@ export const JOBS = {
     banExpire: "ban-expire",
     muteExpire: "mute-expire",
     td2Reminder: "td2-reminder",
+    /** Récurrent : planifié par le bot avec upsertJobScheduler, sous le même nom */
+    flushMetrics: "flush-metrics",
 } as const;
 
 export type JobName = (typeof JOBS)[keyof typeof JOBS];
@@ -16,6 +18,7 @@ export type JobData = {
     "ban-expire": { banId: string };
     "mute-expire": { muteId: string };
     "td2-reminder": { eventId: string };
+    "flush-metrics": Record<string, never>;
 };
 
 /**

@@ -27,3 +27,29 @@ export const REDIS_CHANNELS = {
 export function utcDay(date = new Date()): string {
     return date.toISOString().slice(0, 10);
 }
+
+/** Vrai si `day` est un jour AAAA-MM-JJ qui existe (refuse 2026-02-30) */
+export function isUtcDay(day: string): boolean {
+    const date = new Date(`${day}T00:00:00Z`);
+    return !Number.isNaN(date.getTime()) && utcDay(date) === day;
+}
+
+/** Motifs SCAN des clés journalières : compteurs (hash) et membres actifs (HyperLogLog) */
+export const DAILY_KEY_PATTERNS = [`${PREFIX}:daily:*`, `${PREFIX}:dau:*`] as const;
+
+export type DailyKey = {
+    kind: "counters" | "activeUsers";
+    day: string;
+    guildId: string;
+};
+
+const DAILY_KEY = new RegExp(`^${PREFIX}:(daily|dau):(\\d{4}-\\d{2}-\\d{2}):(\\d{17,20})$`);
+
+/** Décode une clé journalière. null si elle ne suit pas le format attendu. */
+export function parseDailyKey(key: string): DailyKey | null {
+    const match = DAILY_KEY.exec(key);
+    if (!match) return null;
+    const [, type, day, guildId] = match;
+    if (!isUtcDay(day)) return null;
+    return { kind: type === "daily" ? "counters" : "activeUsers", day, guildId };
+}

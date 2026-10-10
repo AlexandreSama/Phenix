@@ -1,18 +1,18 @@
 import { Client, Events, GatewayIntentBits, MessageFlags } from "discord.js";
-import type { Worker } from "bullmq";
 import { Redis } from "ioredis";
 import { createPrismaClient } from "@phenix/database";
-import { METRICS, redisKeys, utcDay } from "@phenix/shared";
+import { METRICS, redisKeys} from "@phenix/shared";
+import { countDaily, markActive } from "./metrics.js";
+import { startScheduler, type Scheduler } from "./scheduler.js";
 import { commands } from "./commands/index.js";
 import { ConfigCache } from "./config-cache.js";
 import { env } from "./env.js";
-import { startScheduler } from "./scheduler.js";
 
 const prisma = createPrismaClient(env.databaseUrl);
 const redis = new Redis(env.redisUrl);
 const subscriber = new Redis(env.redisUrl); // une connexion abonnée ne sert qu'au pub/sub
 const configs = new ConfigCache(prisma);
-let scheduler: Worker | undefined;
+let scheduler: Scheduler | undefined;
 
 const client = new Client({
     intents: [
@@ -32,7 +32,7 @@ client.once(Events.ClientReady, async (ready) => {
         });
     }
     await configs.listen(subscriber);
-    scheduler = startScheduler(env.redisUrl, ready, prisma);
+    scheduler = await startScheduler({ redisUrl: env.redisUrl, redis, client: ready, prisma });
     console.log(`Phenix connecté : ${ready.user.tag} sur ${ready.guilds.cache.size} serveurs`);
 });
 
@@ -85,22 +85,19 @@ client.on(Events.InteractionCreate, async (interaction) => {
                 },
             })
             .catch(() => {});
-        if (interaction.guildId) {
-            void redis
-                .hincrby(redisKeys.dailyCounters(utcDay(), interaction.guildId), METRICS.interactions, 1)
-                .catch(() => {});
-        }
+        if (interaction.guildId) countDaily(redis, interaction.guildId, METRICS.interactions);
     }
 });
 
 client.on(Events.MessageCreate, async (message) => {
     if (!message.inGuild() || message.author.bot) return;
+
+    // Stats d'activité : comptées même quand les niveaux sont désactivés
+    countDaily(redis, message.guildId, METRICS.messages);
+    markActive(redis, message.guildId, message.author.id);
+
     const config = await configs.get(message.guildId);
     if (config && !config.enableLevels) return;
-
-    const day = utcDay();
-    await redis.hincrby(redisKeys.dailyCounters(day, message.guildId), METRICS.messages, 1);
-    await redis.pfadd(redisKeys.dailyActiveUsers(day, message.guildId), message.author.id);
 
     // Une seule fois par minute et par membre : la clé expire au bout de 60 s
     const cooldown = redisKeys.xpCooldown(message.guildId, message.author.id);
@@ -112,7 +109,16 @@ client.on(Events.MessageCreate, async (message) => {
         create: { guildId: message.guildId, userId: message.author.id, totalXp: xp },
         update: { totalXp: { increment: xp } },
     });
-    await redis.hincrby(redisKeys.dailyCounters(day, message.guildId), METRICS.xpGained, xp);
+    countDaily(redis, message.guildId, METRICS.xpGained, xp);
+});
+
+// Exige l'intent privilégié GuildMembers, déjà demandé plus haut
+client.on(Events.GuildMemberAdd, (member) => {
+    countDaily(redis, member.guild.id, METRICS.membersJoined);
+});
+
+client.on(Events.GuildMemberRemove, (member) => {
+    countDaily(redis, member.guild.id, METRICS.membersLeft); // départ, kick ou ban
 });
 
 // Arrêt propre : Docker envoie SIGTERM avant de couper le conteneur
