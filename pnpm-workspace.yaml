@@ -11,6 +11,7 @@ catalog:
   "@prisma/adapter-mariadb": ^7.10.0
   bullmq: ^6.3.0
   ioredis: ^6.0.0
+  zod: ^4.6.0
 
 # pnpm 12 bloque les scripts d'installation des dépendances non listées ici
 allowBuilds:

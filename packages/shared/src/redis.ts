@@ -10,6 +10,8 @@ export const redisKeys = {
     loginState: (state: string) => `${PREFIX}:login-state:${state}`,
     /** Serveurs que l'utilisateur peut gérer d'après Discord (cache de 5 min) */
     managedGuilds: (discordUserId: string) => `${PREFIX}:managed-guilds:${discordUserId}`,
+    /** Salons et rôles d'un serveur, pour les listes du panel (cache de 60 s) */
+    guildResources: (guildId: string) => `${PREFIX}:guild-resources:${guildId}`,
     /** Hash des compteurs du jour (HINCRBY), reporté dans DailyMetric */
     dailyCounters: (day: string, guildId: string) => `${PREFIX}:daily:${day}:${guildId}`,
     /** HyperLogLog des membres actifs du jour (PFADD, PFCOUNT) */

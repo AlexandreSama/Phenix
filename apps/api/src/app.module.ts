@@ -9,6 +9,8 @@ import { PrismaModule } from "./prisma/prisma.module.js";
 import { RedisModule } from "./redis/redis.module.js";
 import { StorageModule } from "./storage/storage.module.js";
 import {AuthModule} from "./auth/auth.module.js";
+import {APP_PIPE} from "@nestjs/core";
+import {validationPipe} from "./validation.js";
 
 @Module({
   imports: [
@@ -35,5 +37,6 @@ import {AuthModule} from "./auth/auth.module.js";
     GuildsModule,
   ],
   controllers: [HealthController],
+  providers: [{ provide: APP_PIPE, useValue: validationPipe }],
 })
 export class AppModule {}
