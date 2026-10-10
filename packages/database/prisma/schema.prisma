@@ -1,0 +1,832 @@
+// =====================================================================
+//  schema.prisma — Bot Discord + panel web + API
+// ---------------------------------------------------------------------
+//  Conventions
+//  - Les champs `xxxId` en @db.VarChar(20) sont des snowflakes Discord
+//    (guildId, userId, channelId, roleId, messageId, createdById...).
+//  - Les clés internes sont des cuid(). Les tables de télémétrie (fort volume,
+//    écriture seule) utilisent un Int autoincrémenté.
+//  - `userId` = membre concerné par la ligne. L'auteur d'une action est
+//    `createdById` (création), `moderatorId` (modération) ou `actorId` (journaux).
+//  - Les fins de durée s'appellent toujours `endsAt`.
+//  - Les états datés utilisent des timestamps (`notifiedAt`, `liftedAt`,
+//    `closedAt`...) plutôt que des booléens.
+//
+//  Départ et purge d'un serveur
+//  - Quand le bot quitte un serveur, on renseigne Guild.leftAt sans supprimer
+//    la ligne.
+//  - Les journaux (ModerationAction, Td2BlacklistLog, PanelAuditLog,
+//    GuildBotEvent) et StoredFile sont en onDelete: Restrict. Une vraie purge
+//    supprime d'abord les objets S3 et les journaux du serveur, puis la Guild.
+//
+//  Télémétrie (InteractionEvent, DailyMetric, ServiceMetricSample, ErrorEvent)
+//  - Pas de clé étrangère : écrire une stat ne doit jamais faire échouer une
+//    action du bot.
+//  - Rétention : InteractionEvent 90 jours, ServiceMetricSample et ErrorEvent
+//    30 jours. DailyMetric est conservé.
+//
+//  Ce qui vit dans Redis, pas ici
+//  - Cooldown XP : SET phenix:xp-cd:{guildId}:{userId} 1 EX 60 NX
+//  - Cache des serveurs possédés par un utilisateur du panel (avec TTL)
+//  - Cache de GuildConfig côté bot, invalidé par pub/sub quand l'API le modifie
+//  - Compteurs du jour avant report dans DailyMetric (clés du jour J supprimées à J+3)
+//  - Tâches différées BullMQ, avec un jobId déterministe (BullMQ interdit ":"
+//    dans un jobId) : giveaway-end-{id}, ban-expire-{id}, mute-expire-{id},
+//    td2-reminder-{id}. La base reste la source de vérité : au démarrage, le
+//    bot replanifie les jobs manquants à partir de Giveaway.endsAt,
+//    ModerationAction.endsAt et Td2Event.startsAt.
+//  Les noms exacts sont définis dans le package @phenix/shared.
+// =====================================================================
+
+generator client {
+  provider            = "prisma-client"
+  output              = "../src/generated/prisma"
+  moduleFormat        = "esm"
+  importFileExtension = "js"
+}
+
+// Prisma 7 : l'URL de connexion se configure dans prisma7.config.ts
+datasource db {
+  provider = "mysql"
+}
+
+// =====================================================================
+//  Enums
+// =====================================================================
+
+// ---------- Plateforme ----------
+
+enum PlatformRole {
+  USER
+  DEVELOPER
+}
+
+// ---------- The Division 2 ----------
+
+enum Td2EventType {
+  RAID
+  INCURSION
+}
+
+enum Td2RaidType {
+  NORMAL
+  SEMI_SPEED
+}
+
+enum Td2EventStatus {
+  SCHEDULED
+  COMPLETED
+  CANCELLED
+}
+
+/// Rôle de jeu uniquement. Suppléant, spectateur, absent... sont des statuts.
+enum Td2Role {
+  DPS
+  HEAL
+  TANK
+}
+
+enum Td2ParticipantStatus {
+  CONFIRMED
+  WAITING // liste d'attente (event complet)
+  SUBSTITUTE // suppléant volontaire
+  SPECTATOR
+  ABSENT
+  CANCELLED
+}
+
+enum Td2BlacklistAction {
+  STRIKE_ADD
+  STRIKE_REMOVE
+  BLACKLIST_ON
+  BLACKLIST_OFF
+  REASON_SET
+}
+
+// ---------- Modération ----------
+
+enum ModerationActionType {
+  BAN
+  UNBAN
+  MUTE
+  UNMUTE
+  KICK
+  WARN
+  TIMEOUT
+  OTHER
+}
+
+enum StaffRoleType {
+  ADMIN
+  MODERATOR
+}
+
+// ---------- Giveaways / Tickets ----------
+
+enum GiveawayStatus {
+  RUNNING
+  ENDED
+  CANCELLED
+}
+
+enum TicketStatus {
+  OPEN
+  CLOSED
+}
+
+// ---------- Panel web ----------
+
+enum GuildPanelRole {
+  ADMIN
+  MODERATOR
+  VIEWER
+}
+
+enum PanelAuditAction {
+  CREATE
+  UPDATE
+  DELETE
+}
+
+// ---------- Fichiers (SeaweedFS) ----------
+
+enum StoredFilePurpose {
+  TICKET_TRANSCRIPT
+  PANEL_IMAGE
+}
+
+// ---------- Statistiques ----------
+
+enum GuildBotEventType {
+  JOINED
+  LEFT
+}
+
+enum InteractionKind {
+  SLASH_COMMAND
+  CONTEXT_MENU
+  BUTTON
+  SELECT_MENU
+  MODAL
+}
+
+enum AppService {
+  BOT
+  API
+  WEB
+}
+
+// =====================================================================
+//  Panel web : utilisateurs
+// =====================================================================
+
+model User {
+  id         String  @id @default(cuid())
+  discordId  String  @unique @db.VarChar(20)
+  username   String
+  globalName String?
+  avatar     String?
+  locale     String? @db.VarChar(10)
+
+  /// DEVELOPER donne accès au dashboard global (stats de tous les serveurs)
+  platformRole PlatformRole @default(USER)
+
+  /// Tokens OAuth chiffrés côté application (AES-GCM), jamais stockés en clair
+  encryptedAccessToken  String?   @db.Text
+  encryptedRefreshToken String?   @db.Text
+  tokenExpiresAt        DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// =====================================================================
+//  Serveur Discord
+// =====================================================================
+
+model Guild {
+  /// ID Discord du serveur (snowflake)
+  id          String  @id @db.VarChar(20)
+  name        String?
+  iconHash    String?
+  ownerId     String? @db.VarChar(20)
+  /// Dernier nombre de membres connu (mis à jour à l'arrivée du bot et chaque jour)
+  memberCount Int?
+
+  /// Dernière arrivée et dernier départ du bot ; l'historique complet est dans GuildBotEvent
+  joinedAt DateTime  @default(now())
+  leftAt   DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  config GuildConfig?
+
+  // Panel
+  panelAccesses  GuildPanelAccess[]
+  panelAuditLogs PanelAuditLog[]
+  files          StoredFile[]
+
+  // Rôles
+  staffRoles GuildStaffRole[]
+  joinRoles  GuildJoinRole[]
+  autoRoles  AutoRole[]
+
+  // Modération
+  moderationActions ModerationAction[]
+  bans              GuildBan[]
+  mutes             GuildMute[]
+
+  // Niveaux
+  levels               GuildLevel[]
+  levelRewards         LevelRewardRole[]
+  levelIgnoredChannels LevelIgnoredChannel[]
+
+  // The Division 2
+  td2Events        Td2Event[]
+  td2Blacklist     Td2Blacklist[]
+  td2BlacklistLogs Td2BlacklistLog[]
+
+  // Divers
+  giveaways Giveaway[]
+  tickets   Ticket[]
+
+  // Statistiques
+  botEvents GuildBotEvent[]
+}
+
+model GuildConfig {
+  guildId String @id @db.VarChar(20)
+
+  language String? @db.VarChar(10) // ex: "fr", "en-US"
+
+  // Salons
+  welcomeChannelId    String? @db.VarChar(20)
+  goodbyeChannelId    String? @db.VarChar(20)
+  logsChannelId       String? @db.VarChar(20)
+  activityChannelId   String? @db.VarChar(20)
+  giveawayChannelId   String? @db.VarChar(20)
+  raidChannelId       String? @db.VarChar(20)
+  incursionChannelId  String? @db.VarChar(20)
+  raidVocalCategoryId String? @db.VarChar(20)
+
+  // Tickets
+  ticketCategoryId  String? @db.VarChar(20)
+  ticketStaffRoleId String? @db.VarChar(20)
+
+  // Modules
+  enableWelcome    Boolean @default(true)
+  enableModeration Boolean @default(true)
+  enableLevels     Boolean @default(true)
+  enableGiveaways  Boolean @default(true)
+  enableTd2        Boolean @default(false)
+
+  td2StrikeThreshold Int @default(3)
+
+  /// Compteurs par serveur, incrémentés atomiquement :
+  /// tx.guildConfig.update({ data: { lastCaseId: { increment: 1 } } })
+  lastCaseId       Int @default(0)
+  lastTicketNumber Int @default(0)
+
+  guild Guild @relation(fields: [guildId], references: [id], onDelete: Cascade)
+}
+
+// =====================================================================
+//  Panel web : accès et journal
+// =====================================================================
+
+model GuildPanelAccess {
+  id String @id @default(cuid())
+
+  guildId          String         @db.VarChar(20)
+  userId           String         @db.VarChar(20)
+  role             GuildPanelRole
+  createdById      String         @db.VarChar(20)
+  updatedById      String?        @db.VarChar(20)
+  revokedAt        DateTime?
+  memberValidUntil DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  guild Guild @relation(fields: [guildId], references: [id], onDelete: Cascade)
+
+  @@unique([guildId, userId])
+  @@index([guildId, revokedAt])
+  @@index([userId, revokedAt])
+}
+
+/// Tout ce qui est modifié depuis le panel : config, accès, rôles, fichiers...
+model PanelAuditLog {
+  id String @id @default(cuid())
+
+  guildId  String           @db.VarChar(20)
+  actorId  String?          @db.VarChar(20) // null = action automatique (ex: accès retiré car le membre a quitté)
+  action   PanelAuditAction
+  entity   String           @db.VarChar(64) // nom du modèle : "GuildConfig", "GuildPanelAccess"...
+  entityId String?          @db.VarChar(64)
+  /// Champs modifiés, ex: { "enableLevels": [true, false] }
+  changes  Json?
+  reason   String?          @db.Text
+
+  createdAt DateTime @default(now())
+
+  guild Guild @relation(fields: [guildId], references: [id], onDelete: Restrict)
+
+  @@index([guildId, createdAt])
+  @@index([entity, entityId])
+  @@index([actorId, createdAt])
+}
+
+// =====================================================================
+//  Fichiers (SeaweedFS / S3)
+// =====================================================================
+
+/// Objet stocké sur SeaweedFS. On stocke la clé, jamais l'URL : les URLs
+/// (signées ou publiques) se construisent à la volée.
+model StoredFile {
+  id String @id @default(cuid())
+
+  guildId      String            @db.VarChar(20)
+  purpose      StoredFilePurpose
+  bucket       String            @db.VarChar(63)
+  objectKey    String            @db.VarChar(512)
+  contentType  String            @db.VarChar(255)
+  size         Int // en octets
+  sha256       String?           @db.Char(64)
+  uploadedById String?           @db.VarChar(20) // null = généré par le bot (transcript)
+
+  createdAt DateTime  @default(now())
+  /// Suppression logique ; un job efface ensuite l'objet sur SeaweedFS
+  deletedAt DateTime?
+
+  guild            Guild   @relation(fields: [guildId], references: [id], onDelete: Restrict)
+  ticketTranscript Ticket?
+
+  @@unique([bucket, objectKey])
+  @@index([guildId, purpose, deletedAt]) // listes et quotas par serveur
+}
+
+// =====================================================================
+//  Rôles
+// =====================================================================
+
+model GuildStaffRole {
+  id String @id @default(cuid())
+
+  guildId String        @db.VarChar(20)
+  roleId  String        @db.VarChar(20)
+  type    StaffRoleType @default(MODERATOR)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  guild Guild @relation(fields: [guildId], references: [id], onDelete: Cascade)
+
+  @@unique([guildId, roleId])
+}
+
+/// Rôles attribués automatiquement à l'arrivée sur le serveur
+model GuildJoinRole {
+  id String @id @default(cuid())
+
+  guildId String @db.VarChar(20)
+  roleId  String @db.VarChar(20)
+
+  createdAt DateTime @default(now())
+
+  guild Guild @relation(fields: [guildId], references: [id], onDelete: Cascade)
+
+  @@unique([guildId, roleId])
+}
+
+/// Rôles proposés en libre-service dans un menu
+model AutoRole {
+  id String @id @default(cuid())
+
+  guildId     String  @db.VarChar(20)
+  roleId      String  @db.VarChar(20)
+  category    String  @default("general")
+  label       String? // texte du menu (sinon role.name)
+  emoji       String?
+  description String?
+  enabled     Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  guild Guild @relation(fields: [guildId], references: [id], onDelete: Cascade)
+
+  @@unique([guildId, roleId])
+  @@index([guildId, enabled])
+}
+
+// =====================================================================
+//  Modération
+// =====================================================================
+
+/// Journal de modération : source de vérité pour l'historique des sanctions
+model ModerationAction {
+  id String @id @default(cuid())
+
+  guildId     String               @db.VarChar(20)
+  caseId      Int // Cas #1, #2... par serveur (via GuildConfig.lastCaseId)
+  userId      String               @db.VarChar(20)
+  moderatorId String               @db.VarChar(20)
+  action      ModerationActionType
+  reason      String               @db.Text
+  endsAt      DateTime? // fin de sanction (tempban, timeout, mute temporaire)
+
+  clearedAt   DateTime? // cas retiré de l'historique
+  clearedById String?   @db.VarChar(20)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  guild Guild      @relation(fields: [guildId], references: [id], onDelete: Restrict)
+  ban   GuildBan?
+  mute  GuildMute?
+
+  @@unique([guildId, caseId])
+  @@index([guildId, userId, createdAt])
+}
+
+/// État actif d'un ban. Modérateur, raison et durée (endsAt) sont dans ModerationAction.
+model GuildBan {
+  id String @id @default(cuid())
+
+  guildId    String    @db.VarChar(20)
+  userId     String    @db.VarChar(20)
+  actionId   String?   @unique // null si le ban a été fait hors du bot
+  liftedAt   DateTime?
+  liftedById String?   @db.VarChar(20)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  guild  Guild             @relation(fields: [guildId], references: [id], onDelete: Cascade)
+  action ModerationAction? @relation(fields: [actionId], references: [id], onDelete: SetNull)
+
+  @@index([guildId, userId, liftedAt])
+}
+
+/// État actif d'un mute. Modérateur, raison et durée (endsAt) sont dans ModerationAction.
+model GuildMute {
+  id String @id @default(cuid())
+
+  guildId    String    @db.VarChar(20)
+  userId     String    @db.VarChar(20)
+  actionId   String?   @unique
+  liftedAt   DateTime?
+  liftedById String?   @db.VarChar(20)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  guild  Guild             @relation(fields: [guildId], references: [id], onDelete: Cascade)
+  action ModerationAction? @relation(fields: [actionId], references: [id], onDelete: SetNull)
+
+  @@index([guildId, userId, liftedAt])
+}
+
+// =====================================================================
+//  Niveaux / XP
+// =====================================================================
+
+model GuildLevel {
+  id String @id @default(cuid())
+
+  guildId String @db.VarChar(20)
+  userId  String @db.VarChar(20)
+
+  /// XP cumulée depuis le début ; le niveau se calcule à partir de cette valeur.
+  /// Le cooldown anti-spam est géré dans Redis.
+  totalXp Int @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  guild Guild @relation(fields: [guildId], references: [id], onDelete: Cascade)
+
+  @@unique([guildId, userId])
+  @@index([guildId, totalXp]) // classement
+  @@index([userId])
+}
+
+model LevelRewardRole {
+  id String @id @default(cuid())
+
+  guildId String @db.VarChar(20)
+  level   Int
+  roleId  String @db.VarChar(20)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  guild Guild @relation(fields: [guildId], references: [id], onDelete: Cascade)
+
+  // Plusieurs rôles possibles par niveau ; un rôle n'est lié qu'à un seul niveau
+  @@unique([guildId, roleId])
+  @@index([guildId, level])
+}
+
+model LevelIgnoredChannel {
+  id String @id @default(cuid())
+
+  guildId   String @db.VarChar(20)
+  channelId String @db.VarChar(20)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  guild Guild @relation(fields: [guildId], references: [id], onDelete: Cascade)
+
+  @@unique([guildId, channelId])
+}
+
+// =====================================================================
+//  The Division 2 : raids & incursions
+// =====================================================================
+
+model Td2Event {
+  id String @id @default(cuid())
+
+  guildId  String         @db.VarChar(20)
+  type     Td2EventType
+  raidType Td2RaidType? // null pour une incursion
+  status   Td2EventStatus @default(SCHEDULED)
+
+  title String
+  zone  String?
+
+  startsAt   DateTime
+  /// Rappel envoyé (job BullMQ td2-reminder-{id})
+  notifiedAt DateTime?
+
+  createdById String @db.VarChar(20)
+
+  channelId String? @db.VarChar(20)
+  threadId  String? @db.VarChar(20)
+  messageId String? @db.VarChar(20)
+
+  playersLimit Int @default(8) // 8 pour un raid, 4 pour une incursion
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  guild        Guild            @relation(fields: [guildId], references: [id], onDelete: Cascade)
+  participants Td2Participant[]
+
+  @@index([guildId, status, startsAt])
+}
+
+model Td2Participant {
+  id String @id @default(cuid())
+
+  eventId  String
+  userId   String  @db.VarChar(20)
+  username String? // snapshot du pseudo à l'inscription
+
+  role   Td2Role? // null pour un spectateur
+  status Td2ParticipantStatus @default(CONFIRMED)
+  isLate Boolean              @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  event Td2Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@unique([eventId, userId])
+  @@index([eventId, status, createdAt]) // promotion de la liste d'attente
+  @@index([userId])
+}
+
+model Td2Blacklist {
+  id String @id @default(cuid())
+
+  guildId     String @db.VarChar(20)
+  userId      String @db.VarChar(20)
+  strikeCount Int    @default(0)
+
+  blacklistedAt   DateTime? // null = pas blacklisté
+  blacklistedById String?   @db.VarChar(20)
+  reason          String?   @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  guild Guild @relation(fields: [guildId], references: [id], onDelete: Cascade)
+
+  @@unique([guildId, userId])
+  @@index([userId])
+}
+
+model Td2BlacklistLog {
+  id String @id @default(cuid())
+
+  guildId String             @db.VarChar(20)
+  userId  String             @db.VarChar(20)
+  actorId String             @db.VarChar(20)
+  action  Td2BlacklistAction
+  reason  String?            @db.Text
+
+  createdAt DateTime @default(now())
+
+  guild Guild @relation(fields: [guildId], references: [id], onDelete: Restrict)
+
+  @@index([guildId, userId, createdAt])
+}
+
+// =====================================================================
+//  Giveaways
+// =====================================================================
+
+model Giveaway {
+  id String @id @default(cuid())
+
+  guildId   String  @db.VarChar(20)
+  channelId String  @db.VarChar(20)
+  messageId String? @unique @db.VarChar(20)
+
+  prize        String @db.VarChar(256)
+  winnersCount Int    @default(1)
+
+  status  GiveawayStatus @default(RUNNING)
+  endsAt  DateTime
+  endedAt DateTime?
+
+  createdById String @db.VarChar(20)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  guild   Guild           @relation(fields: [guildId], references: [id], onDelete: Cascade)
+  entries GiveawayEntry[]
+
+  @@index([guildId, status, endsAt])
+  @@index([channelId])
+}
+
+model GiveawayEntry {
+  id String @id @default(cuid())
+
+  giveawayId String
+  userId     String    @db.VarChar(20)
+  /// Renseigné pour les gagnants (tirage initial ou reroll)
+  wonAt      DateTime?
+
+  createdAt DateTime @default(now())
+
+  giveaway Giveaway @relation(fields: [giveawayId], references: [id], onDelete: Cascade)
+
+  @@unique([giveawayId, userId])
+  @@index([giveawayId, wonAt])
+  @@index([userId])
+}
+
+// =====================================================================
+//  Tickets
+// =====================================================================
+
+model Ticket {
+  id String @id @default(cuid())
+
+  guildId   String @db.VarChar(20)
+  number    Int // Ticket #1, #2... par serveur (via GuildConfig.lastTicketNumber)
+  channelId String @unique @db.VarChar(20)
+  userId    String @db.VarChar(20)
+
+  status      TicketStatus @default(OPEN)
+  claimedById String?      @db.VarChar(20)
+  closedAt    DateTime?
+  closedById  String?      @db.VarChar(20)
+  closeReason String?      @db.Text
+
+  /// Transcript généré à la fermeture et stocké sur SeaweedFS
+  transcriptFileId String? @unique
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  guild          Guild       @relation(fields: [guildId], references: [id], onDelete: Cascade)
+  transcriptFile StoredFile? @relation(fields: [transcriptFileId], references: [id], onDelete: SetNull)
+
+  @@unique([guildId, number])
+  @@index([guildId, userId, status])
+}
+
+// =====================================================================
+//  Statistiques et télémétrie
+// =====================================================================
+
+/// Historique des arrivées et départs du bot (churn)
+model GuildBotEvent {
+  id Int @id @default(autoincrement())
+
+  guildId     String            @db.VarChar(20)
+  type        GuildBotEventType
+  memberCount Int?
+
+  createdAt DateTime @default(now())
+
+  guild Guild @relation(fields: [guildId], references: [id], onDelete: Restrict)
+
+  @@index([guildId, createdAt])
+  @@index([createdAt])
+}
+
+/// Chaque interaction traitée par le bot (commande, bouton, menu, modal).
+/// Rétention : 90 jours. Le long terme est dans DailyMetric.
+model InteractionEvent {
+  id Int @id @default(autoincrement())
+
+  guildId    String?         @db.VarChar(20) // null = message privé
+  userId     String          @db.VarChar(20)
+  kind       InteractionKind
+  name       String          @db.VarChar(100) // nom de la commande, ou du handler pour un bouton ("ticket:open")
+  subcommand String?         @db.VarChar(100) // "groupe sous-commande" le cas échéant
+  success    Boolean
+  errorCode  String?         @db.VarChar(64)
+  durationMs Int
+
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([guildId, createdAt])
+  @@index([name, createdAt])
+}
+
+/// Compteurs journaliers par serveur (jour UTC). Le bot compte dans Redis
+/// (HINCRBY, et PFADD pour "active_users"). Un job recopie ici toutes les
+/// 5 minutes la valeur absolue de chaque compteur, sans faire baisser une
+/// valeur déjà en base (GREATEST).
+/// `metric` vient des constantes du package partagé : "interactions",
+/// "messages", "xp_gained", "members_joined", "members_left", "active_users".
+/// Total global d'une métrique = SUM sur tous les serveurs, sauf
+/// "active_users" : un membre actif sur deux serveurs y compte deux fois.
+/// Clé primaire composite : un id auto-incrémenté serait consommé à chaque
+/// upsert du report (environ 400 000 par jour pour 80 serveurs).
+model DailyMetric {
+  date    DateTime @db.Date
+  guildId String   @db.VarChar(20)
+  metric  String   @db.VarChar(64)
+  value   Int      @default(0)
+
+  updatedAt DateTime @updatedAt
+
+  @@id([date, guildId, metric])
+  @@index([guildId, date])
+  @@index([metric, date])
+}
+
+/// Instantané technique écrit toutes les 60 s par chaque instance de service.
+/// Rétention : 30 jours.
+model ServiceMetricSample {
+  id Int @id @default(autoincrement())
+
+  service    AppService
+  instanceId String     @db.VarChar(64) // hostname du conteneur
+
+  uptimeSec      Int
+  rssMb          Int
+  heapUsedMb     Int
+  cpuPercent     Float?
+  eventLoopLagMs Float?
+
+  // Bot uniquement
+  wsPingMs   Int?
+  guildCount Int?
+
+  // API uniquement, sur la dernière minute
+  requestCount Int?
+  errorCount   Int?
+  p95LatencyMs Int?
+
+  createdAt DateTime @default(now())
+
+  @@index([service, createdAt])
+  @@index([createdAt])
+}
+
+/// Erreurs applicatives des trois services, regroupées par empreinte.
+/// Rétention : 30 jours.
+model ErrorEvent {
+  id Int @id @default(autoincrement())
+
+  service     AppService
+  instanceId  String     @db.VarChar(64)
+  /// sha256 de (type d'erreur + message normalisé + première frame de la stack)
+  fingerprint String     @db.Char(64)
+  name        String     @db.VarChar(128) // ex: "DiscordAPIError[50013]"
+  message     String     @db.Text
+  stack       String?    @db.Text
+  /// Contexte libre : commande, route API, serveur concerné...
+  context     Json?
+  guildId     String?    @db.VarChar(20)
+
+  createdAt DateTime @default(now())
+
+  @@index([fingerprint, createdAt])
+  @@index([service, createdAt])
+  @@index([createdAt])
+}

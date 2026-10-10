@@ -1,0 +1,9 @@
+{
+  "identities": [
+    {
+      "name": "phenix",
+      "credentials": [{ "accessKey": "phenix-dev", "secretKey": "alexandre123Sa" }],
+      "actions": ["Admin", "Read", "List", "Tagging", "Write"]
+    }
+  ]
+}

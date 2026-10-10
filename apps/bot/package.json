@@ -1,0 +1,25 @@
+{
+  "name": "@phenix/bot",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch --env-file=../../.env src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "commands:deploy": "tsx --env-file=../../.env src/deploy-commands.ts"
+  },
+  "dependencies": {
+    "@phenix/database": "workspace:*",
+    "@phenix/shared": "workspace:*",
+    "bullmq": "catalog:",
+    "discord.js": "^14.27.0",
+    "ioredis": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "tsx": "catalog:",
+    "typescript": "catalog:"
+  }
+}

@@ -1,0 +1,6 @@
+// tsconfig.json : éditeur et pnpm typecheck
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": { "noEmit": true },
+  "include": ["src", "prisma7.config.ts"]
+}

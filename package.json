@@ -1,0 +1,17 @@
+{
+  "name": "phenix",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@12.10.1",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "infra:up": "docker compose --env-file .env -f docker/compose.dev.yml up -d",
+    "infra:down": "docker compose --env-file .env -f docker/compose.dev.yml down",
+    "build:packages": "pnpm --filter \"./packages/*\" build",
+    "dev": "pnpm build:packages && pnpm -r --parallel dev",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "db:migrate": "pnpm --filter @phenix/database migrate:dev",
+    "db:studio": "pnpm --filter @phenix/database studio"
+  }
+}
