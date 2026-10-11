@@ -1,0 +1,84 @@
+name: phenix
+
+x-app-env: &app-env
+  DATABASE_URL: mysql://phenix:${MYSQL_PASSWORD}@mysql:3306/phenix
+  REDIS_URL: redis://redis:6379
+
+services:
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: phenix
+      MYSQL_USER: phenix
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -p$$MYSQL_ROOT_PASSWORD"]
+      interval: 5s
+      retries: 20
+
+  redis:
+    image: redis:8-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - redis-data:/data
+
+  seaweedfs:
+    image: chrislusf/seaweedfs # épinglez une version précise
+    restart: unless-stopped
+    command: server -dir=/data -s3 -s3.config=/etc/seaweedfs/s3.json
+    volumes:
+      - seaweedfs-data:/data
+      - ./seaweedfs/s3.prod.json:/etc/seaweedfs/s3.json:ro
+
+  migrate:
+    build: { context: .., target: migrate }
+    environment: *app-env
+    depends_on:
+      mysql: { condition: service_healthy }
+
+  bot:
+    build: { context: .., target: bot }
+    restart: unless-stopped
+    env_file: ../.env.production
+    environment: *app-env
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_started }
+
+  api:
+    build: { context: .., target: api }
+    restart: unless-stopped
+    env_file: ../.env.production
+    environment:
+      <<: *app-env
+      S3_ENDPOINT: http://seaweedfs:8333
+    ports:
+      - "127.0.0.1:3001:3001"
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_started }
+      seaweedfs: { condition: service_started }
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3001/health"]
+      interval: 10s
+      retries: 6
+
+  web:
+    build: { context: .., target: web }
+    restart: unless-stopped
+    environment:
+      API_URL: http://api:3001
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      api: { condition: service_healthy }
+
+volumes:
+  mysql-data:
+  redis-data:
+  seaweedfs-data:
