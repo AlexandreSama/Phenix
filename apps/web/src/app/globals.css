@@ -12,6 +12,22 @@
   --font-mono: var(--font-geist-mono);
 }
 
+/* Couleurs et police de Phenix : une nuit prune, et le feu du logo */
+@theme {
+  --color-fond: #140a10;
+  --color-fond-haut: #1d1018;
+  --color-texte: #f7f1ec;
+  --color-doux: #bba9b4;
+  --color-discret: #85717d;
+  --color-flamme: #ff5a0d;
+  --color-flamme-claire: #ff8a2b;
+  --color-or: #ffc23a;
+  --color-braise: #e0344f;
+  --color-prune: #8e2a6b;
+
+  --font-phenix: "Plus Jakarta Sans Variable", system-ui, sans-serif;
+}
+
 @media (prefers-color-scheme: dark) {
   :root {
     --background: #0a0a0a;
@@ -23,4 +39,158 @@ body {
   background: var(--background);
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
+}
+
+/* ---------- Pages publiques : accueil et liste des serveurs ---------- */
+
+/* Dans la couche "components" : les utilitaires Tailwind (hidden, rounded-…) gardent le dernier mot */
+@layer components {
+  .ph-page {
+    color-scheme: dark; /* listes déroulantes natives en sombre */
+    color: var(--color-texte);
+    font-family: var(--font-phenix);
+    font-size: 1rem;
+    line-height: 1.6;
+    background-color: var(--color-fond);
+    /* Trois halos : braise en haut à droite, flamme à gauche, prune en bas de page */
+    background-image:
+            radial-gradient(60rem 42rem at 88% -12%, rgb(224 52 79 / 0.3), transparent 62%),
+            radial-gradient(48rem 40rem at -12% 28%, rgb(255 90 13 / 0.16), transparent 60%),
+            radial-gradient(64rem 48rem at 50% 115%, rgb(142 42 107 / 0.32), transparent 62%);
+  }
+
+  /* Panneau vitré, comme les cartes de la maquette */
+  .ph-glass {
+    background: linear-gradient(180deg, rgb(255 255 255 / 0.06), rgb(255 255 255 / 0.02));
+    border: 1px solid rgb(255 255 255 / 0.08);
+    border-radius: 1.75rem;
+    box-shadow:
+            inset 0 1px 0 rgb(255 255 255 / 0.05),
+            0 30px 60px -30px rgb(0 0 0 / 0.6);
+    backdrop-filter: blur(18px);
+  }
+
+  /* Panneau posé par-dessus un autre (comme le menu déroulant de la maquette) : presque opaque */
+  .ph-glass-raised {
+    background: #24141e;
+    box-shadow:
+            inset 0 1px 0 rgb(255 255 255 / 0.06),
+            0 30px 70px -20px rgb(0 0 0 / 0.75);
+  }
+
+  /* Champ à l'intérieur d'un panneau */
+  .ph-field {
+    background: rgb(255 255 255 / 0.045);
+    border-radius: 1rem;
+  }
+
+  .ph-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    border-radius: 999px;
+    font-weight: 700;
+    white-space: nowrap;
+    transition:
+            background-color 0.15s,
+            box-shadow 0.15s,
+            filter 0.15s;
+  }
+
+  .ph-btn-primary {
+    color: #1d0c06;
+    background: linear-gradient(135deg, var(--color-or), var(--color-flamme) 70%);
+    box-shadow: 0 12px 32px -12px rgb(255 90 13 / 0.75);
+  }
+
+  .ph-btn-primary:hover {
+    filter: brightness(1.08);
+    box-shadow: 0 14px 36px -10px rgb(255 90 13 / 0.9);
+  }
+
+  .ph-btn-ghost {
+    color: var(--color-texte);
+    background: rgb(255 255 255 / 0.06);
+    border: 1px solid rgb(255 255 255 / 0.1);
+  }
+
+  .ph-btn-ghost:hover {
+    background: rgb(255 255 255 / 0.11);
+  }
+
+  /* Interrupteur : décoratif dans les aperçus de l'accueil, cliquable dans le tableau de bord */
+  .ph-switch {
+    position: relative;
+    display: inline-block;
+    width: 2.25rem;
+    height: 1.25rem;
+    flex-shrink: 0;
+    border-radius: 999px;
+    background: rgb(255 255 255 / 0.12);
+    transition: background-color 0.15s;
+  }
+
+  .ph-switch::after {
+    content: "";
+    position: absolute;
+    top: 0.1875rem;
+    left: 0.1875rem;
+    width: 0.875rem;
+    height: 0.875rem;
+    border-radius: 999px;
+    background: rgb(255 255 255 / 0.55);
+    transition: transform 0.15s;
+  }
+
+  .ph-switch[data-on="true"] {
+    background: linear-gradient(135deg, var(--color-or), var(--color-flamme));
+  }
+
+  .ph-switch[data-on="true"]::after {
+    transform: translateX(1rem);
+    background: #fff;
+  }
+
+  button.ph-switch {
+    cursor: pointer;
+  }
+
+  button.ph-switch:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+}
+
+/* Le seul mouvement de la page : les aperçus du haut arrivent l'un après l'autre */
+.ph-rise {
+  animation: ph-rise 0.9s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+
+.ph-rise-late {
+  animation: ph-rise 0.9s cubic-bezier(0.2, 0.7, 0.2, 1) 0.25s both;
+}
+
+@keyframes ph-rise {
+  from {
+    opacity: 0;
+    transform: translateY(1.5rem);
+  }
+}
+
+.ph-logo {
+  filter: drop-shadow(0 0 18px rgb(255 90 13 / 0.45));
+}
+
+/* Focus clavier bien visible sur le fond sombre */
+.ph-page :focus-visible {
+  outline: 2px solid var(--color-or);
+  outline-offset: 3px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ph-rise,
+  .ph-rise-late {
+    animation: none;
+  }
 }

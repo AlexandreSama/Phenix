@@ -5,3 +5,6 @@ dist/
 .env.production
 *.local
 packages/database/src/generated/
+*.tsbuildinfo
+.idea/
+docker/seaweedfs/s3.prod.json

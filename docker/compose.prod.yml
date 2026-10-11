@@ -73,6 +73,8 @@ services:
     restart: unless-stopped
     environment:
       API_URL: http://api:3001
+      # Public (ce n'est pas un secret) : sert aux liens « Ajouter Phenix à un serveur »
+      DISCORD_CLIENT_ID: ${DISCORD_CLIENT_ID}
     ports:
       - "127.0.0.1:3000:3000"
     depends_on:

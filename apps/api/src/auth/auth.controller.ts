@@ -7,7 +7,7 @@ import { Public, SESSION_COOKIE, STATE_COOKIE } from "./decorators.js";
 import { SESSION_TTL_SECONDS } from "./session.service.js";
 
 /** N'accepte qu'un chemin du panel, pour qu'un lien piégé ne renvoie pas vers un autre site */
-function safeReturnTo(value: string | undefined): string {
+export function safeReturnTo(value: string | undefined): string {
     return value && /^\/(?![/\\])/.test(value) ? value : "/";
 }
 
