@@ -1,0 +1,6 @@
+// tsconfig.build.json : compile src/ vers dist/ (image Docker, pnpm start)
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": { "rootDir": "src", "outDir": "dist", "declaration": false },
+  "include": ["src"]
+}

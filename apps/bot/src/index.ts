@@ -54,7 +54,13 @@ client.on(Events.GuildCreate, async (guild) => {
 });
 
 client.on(Events.GuildDelete, async (guild) => {
-    await prisma.guild.update({ where: { id: guild.id }, data: { leftAt: new Date() } });
+    // Upsert : le serveur peut manquer en base (rejoint puis quitté pendant que le bot était hors ligne)
+    const leftAt = new Date();
+    await prisma.guild.upsert({
+        where: { id: guild.id },
+        create: { id: guild.id, name: guild.name, ownerId: guild.ownerId, memberCount: guild.memberCount, leftAt },
+        update: { leftAt },
+    });
     await prisma.guildBotEvent.create({
         data: { guildId: guild.id, type: "LEFT", memberCount: guild.memberCount },
     });
@@ -94,7 +100,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
             .catch(() => {});
         if (interaction.guildId) countDaily(redis, interaction.guildId, METRICS.interactions);
     }
-});sampling?.stop();
+});
 
 client.on(Events.MessageCreate, async (message) => {
     if (!message.inGuild() || message.author.bot) return;

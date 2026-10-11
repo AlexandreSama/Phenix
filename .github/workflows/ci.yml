@@ -3,7 +3,7 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [master]
 
 # Un nouveau push sur la même branche annule le run encore en cours
 concurrency:
